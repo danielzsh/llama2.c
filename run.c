@@ -83,6 +83,9 @@ typedef struct {
   long encoding;
   long rmsnorm;
   long softmax;
+  long attention;
+  long ffn;
+  long classify;
   long matmul;
   long decoding;
   long total;
@@ -316,6 +319,7 @@ float *forward(Transformer *transformer, int token, int pos) {
     s->v = s->value_cache + loff + pos * kv_dim;
 
     // qkv matmuls for this position
+    long t = time_in_ms();
     matmul(s->q, s->xb, w->wq + l * dim * dim, dim, dim);
     matmul(s->k, s->xb, w->wk + l * dim * kv_dim, dim, kv_dim);
     matmul(s->v, s->xb, w->wv + l * dim * kv_dim, dim, kv_dim);
@@ -383,10 +387,14 @@ float *forward(Transformer *transformer, int token, int pos) {
     // final matmul to get the output of the attention
     matmul(s->xb2, s->xb, w->wo + l * dim * dim, dim, dim);
 
+    b.attention += time_in_ms() - t;
+
     // residual connection back into x
     for (int i = 0; i < dim; i++) {
       x[i] += s->xb2[i];
     }
+
+    t = time_in_ms();
 
     // ffn rmsnorm
     rmsnorm(s->xb, x, w->rms_ffn_weight + l * dim, dim);
@@ -413,13 +421,17 @@ float *forward(Transformer *transformer, int token, int pos) {
     for (int i = 0; i < dim; i++) {
       x[i] += s->xb[i];
     }
+
+    b.ffn += time_in_ms() - t;
   }
 
   // final rmsnorm
   rmsnorm(x, x, w->rms_final_weight, dim);
 
   // classifier into logits
+  long t = time_in_ms();
   matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
+  b.classify += time_in_ms() - t;
   return s->logits;
 }
 
@@ -1113,6 +1125,8 @@ int main(int argc, char *argv[]) {
   b.rmsnorm = 0;
   b.matmul = 0;
   b.softmax = 0;
+  b.attention = 0;
+  b.ffn = 0;
   // run!
   long tt = time_in_ms();
   if (strcmp(mode, "generate") == 0) {
@@ -1134,6 +1148,9 @@ int main(int argc, char *argv[]) {
   printf("%ld to decode\n", b.decoding);
   printf("%ld to rmsnorm\n", b.rmsnorm);
   printf("%ld to softmax\n", b.softmax);
+  printf("%ld spent on attention\n", b.attention);
+  printf("%ld spent on ffn\n", b.ffn);
+  printf("%ld spent on classifying (mapping to logits)", b.classify);
   // memory and file handles cleanup
   free_sampler(&sampler);
   free_tokenizer(&tokenizer);
